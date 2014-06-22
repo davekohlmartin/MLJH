@@ -298,6 +298,7 @@ rffit1
 ```
 
 
+The OOB error rate can be used as an estimate of the out of sample error estimate.  It is 0.38%.
 
 ## Test the Predictor ##
 
