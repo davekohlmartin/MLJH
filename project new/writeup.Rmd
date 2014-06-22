@@ -1,0 +1,239 @@
+Prediction of Proper Dumbbell Exercise Movement
+===============================================
+
+by Dave Martin
+
+Synopsis: Six volunteers were asked to perform dumbbell lifting exercises.  Time series data was collected from sensors that were attached to the volunteers while they were performing the dumbbell lifting exercises.  These movement were classified into five categories: A, B, C, D, E and labelled in the data-set as "classe".  Category A movements are the correct ones, i.e., they are proper in form, the other four had certain mistakes (purposefully) made.  The purpose of this study is to employ machine learning to predict which of the exercises were done correctly from the observations of input data.  We will treat each line of observation as being considered one independent observation.
+
+Notes:
+
+1. The original data was collected and arranged in a sliding-window fashion.  However, we shall treat each line of observaton as an independent observation.
+
+2. Due to length requirement (<2000 words, fewer than 5 graphs) of the project, some of the exploratory work was done off this document, for instance, str(rawdf) and summary(rawdf), etc.  In some other cases, one graph was plotted to illustrate the idea because multifaceted/multipanel plots could not provide the details needed.
+
+## Loading the Data Set ##
+
+First the data is loaded -- from previous exploratory work, we know that there were many blank and NA entries, so we set the parameters to anticipate this fact, stringsAsFactors was set to false to preserve the mostly numerical data as much as possible:
+
+```{r cache=TRUE}
+## read in and replace null strings s NA, in addition, keep existing NA
+
+rawdf <- read.csv(
+  "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+  stringsAsFactors = FALSE, na.strings=c("", NA))
+```
+
+Inspect the data by calling str(rawdf, list.len=160) and summary(rawdf).  This is done off the document so as not to clutter this report.  There were a lot of blanks and NA's as well as variables that were used for housekeeping such as names of the volunteers (user_name).  Those are studied in-depth for potential cleaning up.
+
+## Cleaning the Data Set ##
+
+#### Leakage: problem variables must be removed ####
+
+There were independent variables that seem like indexes (first 7 variables).  These can have leakage effects on the machine learning algorithm (see https://www.kaggle.com/wiki/Leakage).  It is one of the worst problems to have in building a successful machine learning product because it causes the learner to "cheat" by (over) fitting the leakage variables to the dependent variable.  **Often, these variables will cause the learners to train and even test very well but are likely to perform very poorly when deployed and given "real" data.**
+
+In this kind of prediction, **it is best to include only sensor derived data** and leave out indexing and "house-keeping" variables such as time-stamps, windows indices, and user names.  
+
+To understand this, visualize the **non-sensor** derived data -- note that exploratory plots are done quickly without spending too much effort or time to prettify these plots:
+
+```{r}
+par(mfrow=c(1, 2))
+
+plot(rawdf$X, col=as.factor(rawdf$classe))
+plot(rawdf$raw_timestamp_part_1, col=as.factor(rawdf$classe))
+
+par(mfrow=c(1, 2))
+plot(rawdf$raw_timestamp_part_2, col=as.factor(rawdf$classe))
+
+
+plot(rawdf$num_window, col=as.factor(rawdf$classe))
+```
+```{r echo=FALSE}
+par(mfrow=c(1, 1))
+```
+
+It is obvious that these variables (up to the first 7 in the raw data-set) will have leakage effects -- the colourised regions are too neatly grouped and will cause overfitting.  These need to be removed.
+
+The following visualization is shown in contrast to the above plots.  This is an example that shows data that are better suited as training data inputs.  The variables are gyros\_arm\_x, gyros\_arm\_y and gyros\_arm\__z.  As in the earlier plots, the dependent variable, i.e., classe, is used to colour the points.  The plotted data show that they are not artificially or neatly segmented into regions of rectangles or steps, etc. These are data from one of the sensors.  In addition, notice that the coloured regions seem to cluster, even if in a disjointed way, i.e., there are two or three "blobs" of a single colour that are not connected.  This seems to be the kind of data that decision trees can be quite good at:
+
+```{r cache=TRUE}
+## this is an exploratory plot, so no effort is put into making it
+## pretty with nice labels
+
+library(plot3D)
+
+with(rawdf, scatter3D(x=gyros_arm_x, y=gyros_arm_y, z=gyros_arm_z, colvar=as.numeric(as.factor(classe))))
+```
+
+Alternatively one can plot the above graph with the ability to rotate the frame using the "rgl" package.  This generates an interactive 3D scatterplot that allows one to rotate the frame for better perspectives.  The following code (not run in this document) does the job:
+
+
+    library(rgl)
+    
+    with(rawdf, plot3d(gyros_arm_x, gyros_arm_y, gyros_arm_z, col=as.numeric(as
+    .factor(classe))))
+
+A (potentially) computationally expensive way to determine leakage problems with variables is simply to run a machine learning algorithm based on a single independent (observation) variable against the dependent variable.  If the single variable is highly accurate and it is not even a sensor data, the varaible should be discarded as it is likely to be a leakage variable.  For instance:
+
+```{r cache=TRUE}
+## use only the X variable in the original data set
+xdf <- rawdf[, c("X", "classe")]
+
+## partition the subsetted data set
+library(caret)
+set.seed(1234)
+trainidx <- createDataPartition(xdf$classe, p = 0.8, list = F, times = 1)
+x.train <- xdf[trainidx, ]
+x.test <- xdf[-trainidx, ]
+
+## train the learner with X to classe using random forest
+library(randomForest)
+xrf.fit <- randomForest(factor(classe) ~., data=x.train, 
+                        ntree = 30, keep.forest=TRUE, importance=TRUE)
+
+## check the fitted predictor
+xrf.fit
+
+## run the predictor on the test data
+px <- predict(xrf.fit, x.test)
+tx <- table(observed=x.test$classe, predict=px)
+tx
+
+## calculate accuraccy
+xcorrect <- sum(x.test$classe==px)
+xtotal <- length(x.test$classe)
+sx <- xcorrect/xtotal
+sx
+```
+
+The variable X alone achieved a 99.92% accuracy in predicting the classe variable.  This is strong evidence that it is a leakage variable especially since it does not seem to be a sensor data in the raw or calculated sensor data variable. It should be removed from the list of input variables to prevent over-fitting.  The next six variables are removed based on similar grounds.
+
+#### Sparse Variables: do not impute ####
+
+Variables with sparse observations were removed instead of using an imputing strategy.  The sparse observations seem to be mostly summary statistics of groups of the time series data.  Imputing those variables can also cause leakage problems since it can be used by the learning algorithm as an id to the classe variable.
+
+```{r cache=TRUE}
+## remove will be a vector that contains variables to be removed from the
+## cleaned data set.
+
+remove <- c(1, 2, 3, 4, 5, 6, 7)
+
+for (i in 8:length(rawdf)){
+  if (sum(complete.cases(rawdf[, i])) < 19622) {
+    remove <- append(remove, i)
+  }
+}
+
+## create the clean data set by removing problem variables
+cleandf <- rawdf[-remove]
+
+## check the "clean" data frame
+str(cleandf)
+```
+
+#### Staionarity, scaling, shifting and centering data ####
+
+Finally, we assume that the data have stable summary statistics, i.e., they are *stationary*.  Non-stationary time series data need to be transformed into stationary data before a machine learning algorithm can successfully work.  A simple test for staionarity is the augmented dickey-fuller test.  However, there is no reason to believe that this test is needed.  We also leave the data in the raw without re-scaling, shifting, or centering the feature (also known as input or dependent) set since we will be using the Random Forest algorithm.
+
+#### Partition the data for ttraining and testing ####
+
+Next the data is partitioned into Training and Testing sets (80/20 split).  Note, apart from the rawdf data set, we already have a test data-set put aside for final evaluation of the project, so we only need to partition the loaded data-set once.
+
+```{r cache=TRUE}
+
+library(caret)
+set.seed(1234)
+trainIndex <- createDataPartition(cleandf$classe, p = 0.8, list = F, times = 1)
+Training <- cleandf[trainIndex, ]
+Testing <- cleandf[-trainIndex, ]
+
+```
+
+
+## Training: Random Forest ##
+
+Finally,  we train the machine learner.  We use the Random Forest (tm) algorithm.
+
+```{r cache=TRUE}
+
+## the randomForest library allows a more direct control of the parameters
+library(randomForest)
+
+## grow a 1000 tree forest
+rffit1 <- randomForest(factor(classe) ~., data=Training, 
+                      ntree = 1000, keep.forest=TRUE, importance=TRUE)
+
+rffit1
+```
+
+
+## Test the Predictor ##
+
+Next, test the predictor on the test data partition:
+
+```{r cache=TRUE}
+p1 <- predict(rffit1, Testing)
+t1 = table(observed=Testing$classe, predict=p1)
+t1
+```
+
+Get an idea how well the predictor did:
+
+```{r cache=TRUE}
+ncorrect <- sum(Testing$classe==p1)
+ntotal <- length(Testing$classe)
+s1 <- ncorrect/ntotal
+s1
+```
+
+The predictor was able to predict with an accuracy of 99.7% on the test data.
+
+## Cross Validation: a simple once over run ##
+
+Try running the training once more with a different set of partition as a simple cross validation exercise:
+
+```{r cache=TRUE}
+set.seed(5678)  ## use a different seed
+trainIndex <- createDataPartition(cleandf$classe, p = 0.8, list = F, times = 1)
+Training <- cleandf[trainIndex, ]
+Testing <- cleandf[-trainIndex, ]
+
+rffit2 <- randomForest(factor(classe) ~., data=Training, 
+                      ntree = 1000, keep.forest=TRUE, importance=TRUE)
+
+rffit2
+
+p2 <- predict(rffit2, Testing)
+t2 = table(observed=Testing$classe, predict=p2)
+t2
+
+n2correct <- sum(Testing$classe==p2)
+n2total <- length(Testing$classe)
+s2 <- n2correct/n2total
+s2
+```
+
+## Conclusions ##
+
+The second run also achieved over 99% accuracy.  No further re-training needs to be done.  The first fitted random decision forest, rffit1 was used to predict against the test data file at:
+
+    https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+It achieved 100% correct prediction.
+
+## Notes on further refinement: ##
+
+By further reducing the feature variables, the machine learner can be made to run faster and more efficiently, with fewer trees while keeping prediction acccuracy at over 98%.  This can be done by selecting the variables that have the largest *mean decreasing gini*.  The MeanDecreaseGini table can be read by running the following code:
+
+    importance(rffit1)
+    
+The top six gini variables (roll\_belt, yaw\_belt, pitch\_forearm, magnet\_dumbbell\_z, magnet\_dumbbell\_y, roll\_forearm) were used to train a Random Decision Forest of only ntree=100.  The prediction on the test data set achieved over 98% accuracy.  The training time was much faster than a 1000 tree forest.
+
+
+
+
+
+Data-set available courtesy of: 
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz35Lf2USzq
